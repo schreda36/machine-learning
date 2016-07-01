@@ -1,0 +1,128 @@
+---
+title: "Practical Machine Learning - Project"
+author: "Dan Schreck"
+date: "June 30, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(MASS)
+library(klaR)
+library(combinat)
+library(randomForest)
+library(rattle)
+library(rpart)
+```
+
+
+##Overview
+The goal of this analysis is to predict the manner in which individuals performed an exercise. Six participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. In the "classe" variable in the training set an "A" corresponds to the correct execution of the exercise, while the other 4 classes (B through E) correspond to common mistakes. By using data from accelerometers on the belt, forearm, arm, and dumbell we aim to predict which class the observation falls in.
+
+
+</br>
+
+##Data Objects
+```{r}
+setwd("/Users/schre/DataScience/wd/machine-learning")
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training <- read.csv(url(trainUrl), na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv(url(testUrl), na.strings=c("NA","#DIV/0!",""))
+```
+
+
+</br>
+
+
+##Data Exploration
+The training dataset contains close to 150+ predictors. Let's first check it for columns with near zero variance. Then we'll also eliminate those columns which are not truly predictors, namely the first 6 columns. Lastly, we'll eliminate those columns with a high percentage (50%) of NAs.
+```{r}
+nzvTraining <- nearZeroVar(training, saveMetrics=TRUE)
+trainingSub <- training[,nzvTraining$nzv==FALSE]
+
+trainingSub <- trainingSub[,7:length(colnames(trainingSub))]
+
+# Count the number of NAs in each col
+nonnaCols <- as.vector(apply(trainingSub, 2, function(trainingSub) length(which(!is.na(trainingSub)))))
+
+# Drop columns that have more than 50% NAs
+dropNAs <- c()
+for (i in 1:length(nonnaCols)) {
+    if (nonnaCols[i] > nrow(trainingSub)*.50) {
+        dropNAs <- c(dropNAs, colnames(trainingSub)[i])
+    }
+}
+
+#drop NA data in training and testing
+trainingSub <- trainingSub[,(names(trainingSub) %in% dropNAs)]
+
+keepCols <- colnames(trainingSub[, -53]) #remove classe as it's not contained in testing
+testingSub <- testing[keepCols] #keep only variables in testing
+dim(trainingSub); dim(testingSub) #trainingSub will have 1 more variable - classe
+```
+
+We still have a lot of remaining predictors and a rather large training dataset, which is likely too much for many types of analysis, like Random Forest. So, I've decided to break it up into three separate data sets.
+
+```{r}
+set.seed(2)
+idx1 <- createDataPartition(trainingSub$classe, p=1/3, list=FALSE)
+trainingSub1 <- trainingSub[idx1,]
+df <- trainingSub[-idx1,]
+set.seed(3)
+idx2 <- createDataPartition(y=df$classe, p=0.5, list=FALSE)
+trainingSub2 <- df[idx2,]
+trainingSub3 <- df[-idx2,]
+dim(trainingSub1); dim(trainingSub2); dim(trainingSub3)
+
+```
+
+</br>
+
+
+##Model Analysis
+I decided to first try Decision Trees since we know it offers very good performance. 
+
+```{r}
+set.seed(5)
+modFit1 <- train(classe ~ .,method="rpart",data=trainingSub1)
+fancyRpartPlot(modFit1$finalModel)
+predictions1 <- predict(modFit1, newdata=trainingSub1)
+confusionMatrix(predictions1, trainingSub1$classe)
+
+```
+
+As you can see this model's confusionMatrix proves accuracy is rather low. So, let's try it again with, this time with scaling and cross validation.
+```{r}
+set.seed(6)
+modFit1 <- train(trainingSub1$classe ~ .,  preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4), data = trainingSub1, method="rpart")
+predictions1 <- predict(modFit1, newdata=trainingSub1)
+confusionMatrix(predictions1, trainingSub1$classe)
+```
+
+There was little to no improvement with scaling and cross validation using Decision Trees. For the 2nd model I decided to then use Random Forest, which should provide better accuracy.
+```{r}
+#Random Forest 
+set.seed(7)
+modFit2 <- train(trainingSub2$classe ~ ., method="rf", preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4), data=trainingSub2)
+predictions2 <- predict(modFit2,trainingSub2)
+confusionMatrix(predictions2, trainingSub2$classe)
+print(modFit2, digits=3)
+```
+
+As expected, accuracy is much improved, nearing 100%. But with 50+ predictors we may be over-fitting. Let's try this model using training set #3, which should give us a reasonable expectation of the error rate on the Testing dataset.
+
+```{r}
+predictions3 <- predict(modFit2,trainingSub3)
+confusionMatrix(predictions3, trainingSub3$classe)
+```
+
+Our out-of-sample error rate is expected to be approximately 1.0 - 0.9833 = 0.0167. So, let's now apply the final model to our testing dataset
+```{r}
+predictionTesting <- predict(modFit2, newdata=testing)
+predictionTesting
+```
+
+##Conclusion
+Early attempts at using Decision Trees, while fast, did not provide much accuracy. An initial attempt at using Random Forest proved to be much too slow, even after eliminating as many variables as possible. Dividing the traning set into three roughly equal sized data sets allowed for quicker analysis using Random Forest and fullfilled the role of a validation set in order to predict the out-of-sample error rate of 0.0167. 
